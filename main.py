@@ -38,6 +38,7 @@ class ChannelSelectView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         
         target_id = select.values[0].id
+        
         target_channel = await self.msg.guild.fetch_channel(target_id)
         
         # Move attachments
