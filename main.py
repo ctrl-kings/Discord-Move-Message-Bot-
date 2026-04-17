@@ -93,4 +93,4 @@ class ChannelSelectView(discord.ui.View):
             print(f"❌ ERROR: {e}")
             await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
 
-bot.run(TOKEN)
+bot.run(TOKEN) 
