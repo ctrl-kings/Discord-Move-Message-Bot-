@@ -21,6 +21,7 @@ class MoveBot(commands.Bot):
 
 bot = MoveBot()
 
+# --- MODAL FOR CUSTOM INPUT ---
 class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
     amount = discord.ui.TextInput(
         label='How many messages?',
@@ -44,12 +45,55 @@ class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
         except ValueError:
             await interaction.response.send_message("That's not a valid number!", ephemeral=True)
 
+# --- THE ACTUAL REVERSE VIEW (The 30-Second Window) ---
+class ReverseView(discord.ui.View):
+    def __init__(self, data, current_channel):
+        super().__init__(timeout=30)
+        self.data = data
+        self.current_channel = current_channel
+
+    @discord.ui.button(label="Reverse Move (30s)", style=discord.ButtonStyle.secondary)
+    async def reverse_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        button.disabled = True
+        await interaction.edit_original_response(view=self)
+
+        total = len(self.data)
+        first_item = self.data[0]
+        orig_channel = first_item["original_channel"]
+        
+        webhook_channel = orig_channel.parent if isinstance(orig_channel, discord.Thread) else orig_channel
+        webhooks = await webhook_channel.webhooks()
+        webhook = discord.utils.get(webhooks, name="Movr Helper") or await webhook_channel.create_webhook(name="Movr Helper")
+
+        for i, item in enumerate(self.data, 1):
+            progress = "■" * i + "□" * (total - i)
+            await interaction.edit_original_response(content=f"Reversing Move\n{progress} ({i}/{total})")
+
+            await webhook.send(
+                content=item["content"],
+                username=item["author_name"],
+                avatar_url=item["author_avatar"],
+                wait=True
+            )
+
+            try:
+                msg_to_del = await self.current_channel.fetch_message(item["new_msg_id"])
+                await msg_to_del.delete()
+            except: pass
+            
+            await asyncio.sleep(0.4)
+
+        await interaction.edit_original_response(content="Reverse Complete: Messages returned.", view=None)
+
+# --- THE CONTEXT MENU COMMAND ---
 @app_commands.context_menu(name="Move Messages")
 @app_commands.default_permissions(manage_messages=True)
 async def move_messages_context(interaction: discord.Interaction, message: discord.Message):
     view = ChannelSelectView(message)
     await interaction.response.send_message("1. Select destination channel:", view=view, ephemeral=True)
 
+# --- STEP 1: CHANNEL SELECTION ---
 class ChannelSelectView(discord.ui.View):
     def __init__(self, msg):
         super().__init__(timeout=180)
@@ -63,7 +107,7 @@ class ChannelSelectView(discord.ui.View):
         
         perms = target_channel.permissions_for(self.msg.guild.me)
         if not perms.manage_webhooks or not perms.send_messages:
-            return await interaction.response.send_message(f"Error: I need Manage Webhooks and Send Messages permissions in {target_channel.mention}", ephemeral=True)
+            return await interaction.response.send_message(f"Error: Need Webhook perms in {target_channel.mention}", ephemeral=True)
 
         count_view = MessageCountView(self.msg, target_channel)
         await interaction.response.edit_message(
@@ -71,19 +115,22 @@ class ChannelSelectView(discord.ui.View):
             view=count_view
         )
 
+# --- STEP 2: QUANTITY & EXECUTION ---
 class MessageCountView(discord.ui.View):
     def __init__(self, target_msg, target_channel):
         super().__init__(timeout=180)
         self.target_msg = target_msg
         self.target_channel = target_channel
 
-    async def perform_move(self, interaction: discord.Interaction, count: int, reverse=False):
+    async def perform_move(self, interaction: discord.Interaction, count: int):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
         
-        # This checks the "reverse" switch we added
-        status_text = "Reversing Move" if reverse else "Moving Messages"
-        
+        # Disable buttons while moving
+        for item in self.children:
+            item.disabled = True
+        await interaction.edit_original_response(view=self)
+
         try:
             messages_to_move = []
             if count > 1:
@@ -100,14 +147,13 @@ class MessageCountView(discord.ui.View):
             webhook = discord.utils.get(webhooks, name="Movr Helper") or await webhook_channel.create_webhook(name="Movr Helper")
 
             total = len(messages_to_move)
-            
+            moved_data = []
+
             for i, m in enumerate(messages_to_move, 1):
                 progress_bar = "■" * i + "□" * (total - i)
-                await interaction.edit_original_response(content=f"{status_text}\n{progress_bar} ({i}/{total})", view=None)
+                await interaction.edit_original_response(content=f"Moving Messages\n{progress_bar} ({i}/{total})")
 
-                files = []
-                for attachment in m.attachments:
-                    files.append(await attachment.to_file())
+                files = [await a.to_file() for a in m.attachments]
                 
                 sent_msg = await webhook.send(
                     content=m.content,
@@ -118,6 +164,15 @@ class MessageCountView(discord.ui.View):
                     wait=True
                 )
 
+                # Store for Reverse logic
+                moved_data.append({
+                    "content": m.content,
+                    "author_name": m.author.display_name,
+                    "author_avatar": m.author.display_avatar.url,
+                    "new_msg_id": sent_msg.id,
+                    "original_channel": m.channel
+                })
+
                 for r in m.reactions:
                     try: await sent_msg.add_reaction(r.emoji)
                     except: continue
@@ -125,8 +180,9 @@ class MessageCountView(discord.ui.View):
                 await m.delete()
                 await asyncio.sleep(0.4)
 
-            final_status = "Reverse Complete" if reverse else "Move Complete"
-            await interaction.edit_original_response(content=f"{final_status}: {total} messages processed.", view=None)
+            # Move finished: Swap to ReverseView for 30s
+            r_view = ReverseView(moved_data, dest)
+            await interaction.edit_original_response(content=f"Move Complete: {total} messages moved.", view=r_view)
             
         except Exception as e:
             print(f"Error: {e}")
@@ -144,11 +200,5 @@ class MessageCountView(discord.ui.View):
     @discord.ui.button(label="Custom", style=discord.ButtonStyle.success)
     async def custom(self, interaction, button):
         await interaction.response.send_modal(CustomAmountModal(self.target_msg, self.target_channel, self))
-
-    # --- THE REVERSE BUTTON ---
-    @discord.ui.button(label="Reverse Move", style=discord.ButtonStyle.secondary)
-    async def reverse_btn(self, interaction, button):
-        # This triggers the same logic but sets reverse=True for the status text
-        await self.perform_move(interaction, 1, reverse=True)
 
 bot.run(TOKEN)
