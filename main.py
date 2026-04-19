@@ -4,6 +4,7 @@ import asyncio
 from dotenv import load_dotenv 
 from discord import app_commands
 from discord.ext import commands
+from typing import List
 
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN') 
@@ -25,7 +26,7 @@ bot = MoveBot()
 class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
     amount = discord.ui.TextInput(
         label='How many messages?',
-        placeholder='Enter a number (e.g. 25)...',
+        placeholder='Enter a number (1-100)...',
         min_length=1,
         max_length=3,
     )
@@ -39,11 +40,8 @@ class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             count = int(self.amount.value)
-            # Setting a limit of 100 to prevent massive API lag/rate limits
             if count < 1 or count > 100:
                 return await interaction.response.send_message("Please enter a number between 1 and 100.", ephemeral=True)
-            
-            # Pass the count back to the original move logic
             await self.parent_view.perform_move(interaction, count)
         except ValueError:
             await interaction.response.send_message("That's not a valid number!", ephemeral=True)
@@ -55,28 +53,30 @@ async def move_messages_context(interaction: discord.Interaction, message: disco
     view = ChannelSelectView(message)
     await interaction.response.send_message("1️⃣ **Select destination channel:**", view=view, ephemeral=True)
 
-# --- STEP 1: CHANNEL SELECTION ---
+# --- STEP 1: CHANNEL SELECTION & PERMISSION CHECK ---
 class ChannelSelectView(discord.ui.View):
     def __init__(self, msg):
         super().__init__(timeout=180)
         self.msg = msg
 
     @discord.ui.select(cls=discord.ui.ChannelSelect, 
-                        channel_types=[discord.ChannelType.text, discord.ChannelType.public_thread, discord.ChannelType.private_thread, discord.ChannelType.forum])
+                        channel_types=[discord.ChannelType.text, discord.ChannelType.public_thread, discord.ChannelType.private_thread])
     async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        try:
-            selected_id = select.values[0].id
-            target_channel = await self.msg.guild.fetch_channel(selected_id)
-            
-            count_view = MessageCountView(self.msg, target_channel)
-            await interaction.response.edit_message(
-                content=f"2️⃣ **Target:** {target_channel.mention}\nHow many messages should I move?", 
-                view=count_view
-            )
-        except Exception as e:
-            await interaction.followup.send(f"❌ Error fetching channel: {e}", ephemeral=True)
+        selected_id = select.values[0].id
+        target_channel = await self.msg.guild.fetch_channel(selected_id)
+        
+        # QOL: Permission Auto-Check
+        perms = target_channel.permissions_for(self.msg.guild.me)
+        if not perms.manage_webhooks or not perms.send_messages:
+            return await interaction.response.send_message(f"❌ **Permission Error:** I need `Manage Webhooks` and `Send Messages` in {target_channel.mention}!", ephemeral=True)
 
-# --- STEP 2: QUANTITY SELECTION & EXECUTION ---
+        count_view = MessageCountView(self.msg, target_channel)
+        await interaction.response.edit_message(
+            content=f"2️⃣ **Target:** {target_channel.mention}\nHow many messages should I move?", 
+            view=count_view
+        )
+
+# --- STEP 2: QUANTITY & PROGRESS ---
 class MessageCountView(discord.ui.View):
     def __init__(self, target_msg, target_channel):
         super().__init__(timeout=180)
@@ -84,17 +84,14 @@ class MessageCountView(discord.ui.View):
         self.target_channel = target_channel
 
     async def perform_move(self, interaction: discord.Interaction, count: int):
-        # We check if interaction was already responded to (by the modal)
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
         
         try:
             messages_to_move = []
-            
             if count > 1:
                 async for m in self.target_msg.channel.history(limit=count-1, before=self.target_msg):
                     messages_to_move.append(m)
-            
             messages_to_move.reverse() 
             messages_to_move.append(self.target_msg)
 
@@ -105,7 +102,13 @@ class MessageCountView(discord.ui.View):
             webhooks = await webhook_channel.webhooks()
             webhook = discord.utils.get(webhooks, name="Movr Helper") or await webhook_channel.create_webhook(name="Movr Helper")
 
-            for m in messages_to_move:
+            total = len(messages_to_move)
+            
+            # QOL: Live Progress Embed
+            for i, m in enumerate(messages_to_move, 1):
+                progress_bar = "■" * i + "□" * (total - i)
+                await interaction.edit_original_response(content=f"📦 **Moving Messages...**\n`{progress_bar}` ({i}/{total})", view=None)
+
                 files = []
                 for attachment in m.attachments:
                     files.append(await attachment.to_file())
@@ -119,36 +122,30 @@ class MessageCountView(discord.ui.View):
                     wait=True
                 )
 
-                for reaction in m.reactions:
-                    try:
-                        await sent_msg.add_reaction(reaction.emoji)
-                    except:
-                        continue
+                for r in m.reactions:
+                    try: await sent_msg.add_reaction(r.emoji)
+                    except: continue
 
                 await m.delete()
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.5) # Slight delay for embed stability
 
-            await interaction.followup.send(f"✅ Successfully moved {len(messages_to_move)} messages!", ephemeral=True)
+            await interaction.edit_original_response(content=f"✅ **Move Complete!** Moved {total} messages to {dest.mention}.", view=None)
             
         except Exception as e:
             print(f"❌ ERROR: {e}")
             await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
 
     @discord.ui.button(label="Just this 1", style=discord.ButtonStyle.gray)
-    async def one(self, interaction, button):
-        await self.perform_move(interaction, 1)
+    async def one(self, interaction, button): await self.perform_move(interaction, 1)
 
     @discord.ui.button(label="Last 5", style=discord.ButtonStyle.primary)
-    async def five(self, interaction, button):
-        await self.perform_move(interaction, 5)
+    async def five(self, interaction, button): await self.perform_move(interaction, 5)
 
     @discord.ui.button(label="Last 10", style=discord.ButtonStyle.danger)
-    async def ten(self, interaction, button):
-        await self.perform_move(interaction, 10)
+    async def ten(self, interaction, button): await self.perform_move(interaction, 10)
 
     @discord.ui.button(label="Custom Amount", style=discord.ButtonStyle.success)
     async def custom(self, interaction, button):
-        # This opens the popup box
         await interaction.response.send_modal(CustomAmountModal(self.target_msg, self.target_channel, self))
 
 bot.run(TOKEN)
