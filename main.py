@@ -4,7 +4,6 @@ import asyncio
 from dotenv import load_dotenv 
 from discord import app_commands
 from discord.ext import commands
-from typing import List
 
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN') 
@@ -22,7 +21,6 @@ class MoveBot(commands.Bot):
 
 bot = MoveBot()
 
-# --- THE MODAL FOR CUSTOM INPUT ---
 class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
     amount = discord.ui.TextInput(
         label='How many messages?',
@@ -46,14 +44,12 @@ class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
         except ValueError:
             await interaction.response.send_message("That's not a valid number!", ephemeral=True)
 
-# --- THE CONTEXT MENU COMMAND ---
 @app_commands.context_menu(name="Move Messages")
 @app_commands.default_permissions(manage_messages=True)
 async def move_messages_context(interaction: discord.Interaction, message: discord.Message):
     view = ChannelSelectView(message)
-    await interaction.response.send_message("1️⃣ **Select destination channel:**", view=view, ephemeral=True)
+    await interaction.response.send_message("1. Select destination channel:", view=view, ephemeral=True)
 
-# --- STEP 1: CHANNEL SELECTION & PERMISSION CHECK ---
 class ChannelSelectView(discord.ui.View):
     def __init__(self, msg):
         super().__init__(timeout=180)
@@ -65,27 +61,28 @@ class ChannelSelectView(discord.ui.View):
         selected_id = select.values[0].id
         target_channel = await self.msg.guild.fetch_channel(selected_id)
         
-        # QOL: Permission Auto-Check
         perms = target_channel.permissions_for(self.msg.guild.me)
         if not perms.manage_webhooks or not perms.send_messages:
-            return await interaction.response.send_message(f"❌ **Permission Error:** I need `Manage Webhooks` and `Send Messages` in {target_channel.mention}!", ephemeral=True)
+            return await interaction.response.send_message(f"Error: I need Manage Webhooks and Send Messages permissions in {target_channel.mention}", ephemeral=True)
 
         count_view = MessageCountView(self.msg, target_channel)
         await interaction.response.edit_message(
-            content=f"2️⃣ **Target:** {target_channel.mention}\nHow many messages should I move?", 
+            content=f"2. Target: {target_channel.mention}\nHow many messages should I move?", 
             view=count_view
         )
 
-# --- STEP 2: QUANTITY & PROGRESS ---
 class MessageCountView(discord.ui.View):
     def __init__(self, target_msg, target_channel):
         super().__init__(timeout=180)
         self.target_msg = target_msg
         self.target_channel = target_channel
 
-    async def perform_move(self, interaction: discord.Interaction, count: int):
+    async def perform_move(self, interaction: discord.Interaction, count: int, reverse=False):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
+        
+        # This checks the "reverse" switch we added
+        status_text = "Reversing Move" if reverse else "Moving Messages"
         
         try:
             messages_to_move = []
@@ -104,10 +101,9 @@ class MessageCountView(discord.ui.View):
 
             total = len(messages_to_move)
             
-            # QOL: Live Progress Embed
             for i, m in enumerate(messages_to_move, 1):
                 progress_bar = "■" * i + "□" * (total - i)
-                await interaction.edit_original_response(content=f"📦 **Moving Messages...**\n`{progress_bar}` ({i}/{total})", view=None)
+                await interaction.edit_original_response(content=f"{status_text}\n{progress_bar} ({i}/{total})", view=None)
 
                 files = []
                 for attachment in m.attachments:
@@ -127,25 +123,32 @@ class MessageCountView(discord.ui.View):
                     except: continue
 
                 await m.delete()
-                await asyncio.sleep(0.5) # Slight delay for embed stability
+                await asyncio.sleep(0.4)
 
-            await interaction.edit_original_response(content=f"✅ **Move Complete!** Moved {total} messages to {dest.mention}.", view=None)
+            final_status = "Reverse Complete" if reverse else "Move Complete"
+            await interaction.edit_original_response(content=f"{final_status}: {total} messages processed.", view=None)
             
         except Exception as e:
-            print(f"❌ ERROR: {e}")
+            print(f"Error: {e}")
             await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
 
-    @discord.ui.button(label="Just this 1", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="1", style=discord.ButtonStyle.gray)
     async def one(self, interaction, button): await self.perform_move(interaction, 1)
 
-    @discord.ui.button(label="Last 5", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="5", style=discord.ButtonStyle.primary)
     async def five(self, interaction, button): await self.perform_move(interaction, 5)
 
-    @discord.ui.button(label="Last 10", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="10", style=discord.ButtonStyle.danger)
     async def ten(self, interaction, button): await self.perform_move(interaction, 10)
 
-    @discord.ui.button(label="Custom Amount", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Custom", style=discord.ButtonStyle.success)
     async def custom(self, interaction, button):
         await interaction.response.send_modal(CustomAmountModal(self.target_msg, self.target_channel, self))
+
+    # --- THE REVERSE BUTTON ---
+    @discord.ui.button(label="Reverse Move", style=discord.ButtonStyle.secondary)
+    async def reverse_btn(self, interaction, button):
+        # This triggers the same logic but sets reverse=True for the status text
+        await self.perform_move(interaction, 1, reverse=True)
 
 bot.run(TOKEN)
