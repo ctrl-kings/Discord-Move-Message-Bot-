@@ -21,6 +21,33 @@ class MoveBot(commands.Bot):
 
 bot = MoveBot()
 
+# --- THE MODAL FOR CUSTOM INPUT ---
+class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
+    amount = discord.ui.TextInput(
+        label='How many messages?',
+        placeholder='Enter a number (e.g. 25)...',
+        min_length=1,
+        max_length=3,
+    )
+
+    def __init__(self, target_msg, target_channel, parent_view):
+        super().__init__()
+        self.target_msg = target_msg
+        self.target_channel = target_channel
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            count = int(self.amount.value)
+            # Setting a limit of 100 to prevent massive API lag/rate limits
+            if count < 1 or count > 100:
+                return await interaction.response.send_message("Please enter a number between 1 and 100.", ephemeral=True)
+            
+            # Pass the count back to the original move logic
+            await self.parent_view.perform_move(interaction, count)
+        except ValueError:
+            await interaction.response.send_message("That's not a valid number!", ephemeral=True)
+
 # --- THE CONTEXT MENU COMMAND ---
 @app_commands.context_menu(name="Move Messages")
 @app_commands.default_permissions(manage_messages=True)
@@ -41,10 +68,9 @@ class ChannelSelectView(discord.ui.View):
             selected_id = select.values[0].id
             target_channel = await self.msg.guild.fetch_channel(selected_id)
             
-            # Switch to the count selection view (your bulk logic)
             count_view = MessageCountView(self.msg, target_channel)
             await interaction.response.edit_message(
-                content=f"2️⃣ **Target:** {target_channel.mention}\nHow many messages (including the one clicked) should I move?", 
+                content=f"2️⃣ **Target:** {target_channel.mention}\nHow many messages should I move?", 
                 view=count_view
             )
         except Exception as e:
@@ -58,20 +84,20 @@ class MessageCountView(discord.ui.View):
         self.target_channel = target_channel
 
     async def perform_move(self, interaction: discord.Interaction, count: int):
-        await interaction.response.defer(ephemeral=True)
+        # We check if interaction was already responded to (by the modal)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         
         try:
             messages_to_move = []
             
-            # 1. Fetch History (Chronological)
             if count > 1:
                 async for m in self.target_msg.channel.history(limit=count-1, before=self.target_msg):
                     messages_to_move.append(m)
             
-            messages_to_move.reverse() # Sort from oldest to newest
-            messages_to_move.append(self.target_msg) # Add the right-clicked message last
+            messages_to_move.reverse() 
+            messages_to_move.append(self.target_msg)
 
-            # 2. Webhook Setup
             dest = self.target_channel
             webhook_channel = dest.parent if isinstance(dest, discord.Thread) else dest
             thread_to_use = dest if isinstance(dest, discord.Thread) else discord.utils.MISSING
@@ -79,7 +105,6 @@ class MessageCountView(discord.ui.View):
             webhooks = await webhook_channel.webhooks()
             webhook = discord.utils.get(webhooks, name="Movr Helper") or await webhook_channel.create_webhook(name="Movr Helper")
 
-            # 3. Execution Loop
             for m in messages_to_move:
                 files = []
                 for attachment in m.attachments:
@@ -94,7 +119,6 @@ class MessageCountView(discord.ui.View):
                     wait=True
                 )
 
-                # Carry over reactions (keeping this logic from the merge)
                 for reaction in m.reactions:
                     try:
                         await sent_msg.add_reaction(reaction.emoji)
@@ -102,7 +126,7 @@ class MessageCountView(discord.ui.View):
                         continue
 
                 await m.delete()
-                await asyncio.sleep(0.4) # Protect against rate limits
+                await asyncio.sleep(0.4)
 
             await interaction.followup.send(f"✅ Successfully moved {len(messages_to_move)} messages!", ephemeral=True)
             
@@ -121,5 +145,10 @@ class MessageCountView(discord.ui.View):
     @discord.ui.button(label="Last 10", style=discord.ButtonStyle.danger)
     async def ten(self, interaction, button):
         await self.perform_move(interaction, 10)
+
+    @discord.ui.button(label="Custom Amount", style=discord.ButtonStyle.success)
+    async def custom(self, interaction, button):
+        # This opens the popup box
+        await interaction.response.send_modal(CustomAmountModal(self.target_msg, self.target_channel, self))
 
 bot.run(TOKEN)
