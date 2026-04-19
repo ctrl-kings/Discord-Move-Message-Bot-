@@ -41,7 +41,7 @@ class ChannelSelectView(discord.ui.View):
             selected_id = select.values[0].id
             target_channel = await self.msg.guild.fetch_channel(selected_id)
             
-            # Switch to the count selection view
+            # Switch to the count selection view (your bulk logic)
             count_view = MessageCountView(self.msg, target_channel)
             await interaction.response.edit_message(
                 content=f"2️⃣ **Target:** {target_channel.mention}\nHow many messages (including the one clicked) should I move?", 
@@ -57,24 +57,21 @@ class MessageCountView(discord.ui.View):
         self.target_msg = target_msg
         self.target_channel = target_channel
 
-   async def perform_move(self, interaction: discord.Interaction, count: int):
+    async def perform_move(self, interaction: discord.Interaction, count: int):
         await interaction.response.defer(ephemeral=True)
         
         try:
             messages_to_move = []
             
-            # If we want more than 1 message, fetch the ones BEFORE the clicked one
+            # 1. Fetch History (Chronological)
             if count > 1:
                 async for m in self.target_msg.channel.history(limit=count-1, before=self.target_msg):
                     messages_to_move.append(m)
             
-            # The history comes in newest-to-oldest, so we flip it
-            messages_to_move.reverse() 
-            
-            # Finally, add the message you actually right-clicked to the end of the list
-            messages_to_move.append(self.target_msg)
+            messages_to_move.reverse() # Sort from oldest to newest
+            messages_to_move.append(self.target_msg) # Add the right-clicked message last
 
-            # --- Webhook logic starts here (Same as before) ---
+            # 2. Webhook Setup
             dest = self.target_channel
             webhook_channel = dest.parent if isinstance(dest, discord.Thread) else dest
             thread_to_use = dest if isinstance(dest, discord.Thread) else discord.utils.MISSING
@@ -82,13 +79,13 @@ class MessageCountView(discord.ui.View):
             webhooks = await webhook_channel.webhooks()
             webhook = discord.utils.get(webhooks, name="Movr Helper") or await webhook_channel.create_webhook(name="Movr Helper")
 
+            # 3. Execution Loop
             for m in messages_to_move:
-                # Re-fetch attachments to ensure they are fresh
                 files = []
-                for a in m.attachments:
-                    files.append(await a.to_file())
+                for attachment in m.attachments:
+                    files.append(await attachment.to_file())
                 
-                await webhook.send(
+                sent_msg = await webhook.send(
                     content=m.content,
                     username=m.author.display_name,
                     avatar_url=m.author.display_avatar.url,
@@ -96,8 +93,16 @@ class MessageCountView(discord.ui.View):
                     thread=thread_to_use,
                     wait=True
                 )
+
+                # Carry over reactions (keeping this logic from the merge)
+                for reaction in m.reactions:
+                    try:
+                        await sent_msg.add_reaction(reaction.emoji)
+                    except:
+                        continue
+
                 await m.delete()
-                await asyncio.sleep(0.4) # Crucial to avoid rate limits during bulk moves
+                await asyncio.sleep(0.4) # Protect against rate limits
 
             await interaction.followup.send(f"✅ Successfully moved {len(messages_to_move)} messages!", ephemeral=True)
             
