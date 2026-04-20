@@ -8,7 +8,7 @@ from discord.ext import commands
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN') 
 # Pulls your ID from the environment for security
-OWNER_ID = int(os.getenv('OWNER_ID')) 
+OWNER_ID = int(os.getenv('OWNER_ID') or 1187154363622367285)
 
 class MoveBot(commands.Bot):
     def __init__(self):
