@@ -7,24 +7,59 @@ from discord.ext import commands
 
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN') 
-# Pulls from Railway Variables; fallbacks to your ID if not found
 OWNER_ID = int(os.getenv('OWNER_ID') or 1187154363622367285) 
 
 class MoveBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.guilds = True         # Required to see the list of servers
-        intents.members = True        # Required to find and DM server owners
+        intents.guilds = True         
+        intents.members = True        
         intents.message_content = True 
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
+        # Registering all commands
         self.tree.add_command(move_messages_context)
         self.tree.add_command(broadcast)
+        self.tree.add_command(help_command) # Added Help Command
         await self.tree.sync()
         print(f"Ctrl Kings: Movr Bot is online. Owner ID {OWNER_ID} recognized.")
 
 bot = MoveBot()
+
+# --- THE HELP COMMAND (Top.gg Requirement) ---
+@app_commands.command(name="help", description="Learn how to use Movr to clean up your channels")
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Movr Help Guide",
+        description="Movr is a specialized utility for moving conversations between channels while preserving the original user's identity.",
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name="How to Move Messages",
+        value=(
+            "1. Right-click any message.\n"
+            "2. Select 'Apps'.\n"
+            "3. Click 'Move Messages'.\n"
+            "4. Follow the prompts to select a destination and message count."
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Key Features",
+        value=(
+            "• Ghost Engine: Preserves avatars and names via webhooks.\n"
+            "• Reverse System: Undo any move within 30 seconds.\n"
+            "• Custom Amounts: Move between 1 and 100 messages at once."
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="A professional utility for moderators and streamers.")
+    # ephemeral=True means only the user who typed it sees it (keeps channels clean)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # --- THE BROADCAST COMMAND (Owner Only) ---
 @app_commands.command(name="broadcast", description="Sends an update DM to all server owners")
@@ -32,13 +67,11 @@ async def broadcast(interaction: discord.Interaction, message: str):
     if interaction.user.id != OWNER_ID:
         return await interaction.response.send_message("Access Denied: Owner Only Command.", ephemeral=True)
 
-    # This will now accurately reflect the number of servers the bot is in
     await interaction.response.send_message(f"Initiating broadcast to {len(bot.guilds)} servers...", ephemeral=True)
     
     success, fail = 0, 0
     for guild in bot.guilds:
         try:
-            # Explicitly fetch owner if not in cache
             owner = guild.owner or await guild.fetch_member(guild.owner_id)
             
             if owner:
@@ -51,7 +84,7 @@ async def broadcast(interaction: discord.Interaction, message: str):
                 await owner.send(embed=embed)
                 success += 1
                 print(f"Successfully messaged owner of {guild.name}")
-                await asyncio.sleep(1.5) # Prevent Discord rate-limiting
+                await asyncio.sleep(1.5) 
             else:
                 fail += 1
         except Exception as e:
