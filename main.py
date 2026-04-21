@@ -27,7 +27,7 @@ class MoveBot(commands.Bot):
 
 bot = MoveBot()
 
-# --- THE HELP COMMAND (Top.gg Requirement) ---
+# --- THE HELP COMMAND ---
 @app_commands.command(name="help", description="Learn how to use Movr to clean up your channels")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -50,9 +50,9 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="Key Features",
         value=(
-            "• Ghost Engine: Preserves avatars and names via webhooks.\n"
-            "• Reverse System: Undo any move within 30 seconds.\n"
-            "• Custom Amounts: Move between 1 and 100 messages at once."
+            "• **Identity Mirroring**: Preserves avatars and names via webhooks.\n"
+            "• **Reverse System**: Undo any move within 30 seconds.\n"
+            "• **Context Retention**: Keep reactions and attachments intact."
         ),
         inline=False
     )
