@@ -51,7 +51,7 @@ async def help_command(interaction: discord.Interaction):
         name="Key Features",
         value=(
             "• **Identity Mirroring**: Preserves avatars and names via webhooks.\n"
-            "• **Reverse System**: Undo any move within 30 seconds.\n"
+            "• **Reverse System**: Undo any move within 30 seconds.(after message completion)\n"
             "• **Context Retention**: Keep reactions and attachments intact."
         ),
         inline=False
