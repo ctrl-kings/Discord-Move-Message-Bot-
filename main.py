@@ -13,15 +13,14 @@ class MoveBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.guilds = True         
-        intents.members = True        
+        intents.members = True         
         intents.message_content = True 
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Registering all commands
         self.tree.add_command(move_messages_context)
         self.tree.add_command(broadcast)
-        self.tree.add_command(help_command) # Added Help Command
+        self.tree.add_command(help_command)
         await self.tree.sync()
         print(f"Ctrl Kings: Movr Bot is online. Owner ID {OWNER_ID} recognized.")
 
@@ -51,17 +50,16 @@ async def help_command(interaction: discord.Interaction):
         name="Key Features",
         value=(
             "• **Identity Mirroring**: Preserves avatars and names via webhooks.\n"
-            "• **Reverse System**: Undo any move within 30 seconds.(after message completion)\n"
+            "• **Reverse System**: Undo any move within 30 seconds (after completion).\n"
             "• **Context Retention**: Keep reactions and attachments intact."
         ),
         inline=False
     )
     
     embed.set_footer(text="A professional utility for moderators and streamers.")
-    # ephemeral=True means only the user who typed it sees it (keeps channels clean)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# --- THE BROADCAST COMMAND (Owner Only) ---
+# --- THE BROADCAST COMMAND ---
 @app_commands.command(name="broadcast", description="Sends an update DM to all server owners")
 async def broadcast(interaction: discord.Interaction, message: str):
     if interaction.user.id != OWNER_ID:
@@ -73,25 +71,17 @@ async def broadcast(interaction: discord.Interaction, message: str):
     for guild in bot.guilds:
         try:
             owner = guild.owner or await guild.fetch_member(guild.owner_id)
-            
             if owner:
-                embed = discord.Embed(
-                    title="Movr Update",
-                    description=message,
-                    color=discord.Color.blue()
-                )
+                embed = discord.Embed(title="Movr Update", description=message, color=discord.Color.blue())
                 embed.set_footer(text=f"Sent to: {guild.name}")
                 await owner.send(embed=embed)
                 success += 1
-                print(f"Successfully messaged owner of {guild.name}")
                 await asyncio.sleep(1.5) 
-            else:
-                fail += 1
+            else: fail += 1
         except Exception as e:
-            print(f"Failed to send to {guild.name}: {e}")
             fail += 1
 
-    await interaction.followup.send(f"Broadcast Complete! Update sent to {success} server owners. (Failed: {fail})")
+    await interaction.followup.send(f"Broadcast Complete! Sent to {success} owners. (Failed: {fail})")
 
 # --- THE REVERSE/UNDO VIEW ---
 class ReverseView(discord.ui.View):
@@ -116,7 +106,8 @@ class ReverseView(discord.ui.View):
 
         for i, item in enumerate(self.data, 1):
             await interaction.edit_original_response(content=f"Reversing Move\n{'■' * i + '□' * (total - i)} ({i}/{total})")
-
+            
+            # IDENTITY MIRRORING REPLIED TO REVERSE
             await webhook.send(
                 content=item["content"],
                 username=item["author_name"],
@@ -190,7 +181,7 @@ class MessageCountView(discord.ui.View):
             
             if self.target_msg not in messages_to_move: messages_to_move.insert(0, self.target_msg)
             messages_to_move = messages_to_move[:count]
-            messages_to_move.reverse()
+            messages_to_move.reverse() # Ensures chronological order
 
             dest = self.target_channel
             webhook_channel = dest.parent if isinstance(dest, discord.Thread) else dest
@@ -203,16 +194,24 @@ class MessageCountView(discord.ui.View):
             for i, m in enumerate(messages_to_move, 1):
                 await interaction.edit_original_response(content=f"Moving Messages\n{'■' * i + '□' * (total - i)} ({i}/{total})")
                 
+                # Capture fresh identity data per message
+                current_author_name = m.author.display_name
+                current_author_avatar = m.author.display_avatar.url
+                
                 files = [await a.to_file() for a in m.attachments]
                 sent_msg = await webhook.send(
-                    content=m.content, username=m.author.display_name, avatar_url=m.author.display_avatar.url,
-                    files=files, thread=dest if isinstance(dest, discord.Thread) else discord.utils.MISSING, wait=True
+                    content=m.content, 
+                    username=current_author_name, 
+                    avatar_url=current_author_avatar,
+                    files=files, 
+                    thread=dest if isinstance(dest, discord.Thread) else discord.utils.MISSING, 
+                    wait=True
                 )
                 
                 moved_data.append({
                     "content": m.content, 
-                    "author_name": m.author.display_name, 
-                    "author_avatar": m.author.display_avatar.url, 
+                    "author_name": current_author_name, 
+                    "author_avatar": current_author_avatar, 
                     "new_msg_id": sent_msg.id, 
                     "original_channel": m.channel
                 })
