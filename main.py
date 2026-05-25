@@ -61,7 +61,8 @@ bot = MoveBot()
 
 # --- UNIVERSAL MOVE ENGINE (FORUMS, EMBEDS, LARGE FILES, NITRO SPLIT) ---
 async def execute_move(interaction: discord.Interaction, target_msg: discord.Message, target_channel, count: int, forum_title: str = None):
-    if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
+    if not interaction.response.is_done(): 
+        await interaction.response.defer(ephemeral=True)
     await interaction.edit_original_response(content="Preparing to move...", view=None)
 
     try:
@@ -238,6 +239,7 @@ class ReverseView(discord.ui.View):
                     content=chunk,
                     username=item["author_name"],
                     avatar_url=item["author_avatar"],
+                    thread=orig_channel if isinstance(orig_channel, discord.Thread) else discord.utils.MISSING,
                     wait=True
                 )
 
@@ -309,7 +311,17 @@ class ChannelSelectView(discord.ui.View):
         super().__init__(timeout=180)
         self.msg = msg
 
-    @discord.ui.select(cls=discord.ui.ChannelSelect, channel_types=[discord.ChannelType.text, discord.ChannelType.public_thread, discord.ChannelType.private_thread, discord.ChannelType.forum])
+    @discord.ui.select(
+        cls=discord.ui.ChannelSelect, 
+        channel_types=[
+            discord.ChannelType.text, 
+            discord.ChannelType.public_thread, 
+            discord.ChannelType.private_thread, 
+            discord.ChannelType.forum,
+            discord.ChannelType.news,
+            discord.ChannelType.voice
+        ]
+    )
     async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
         target_channel = await self.msg.guild.fetch_channel(select.values[0].id)
         perms = target_channel.permissions_for(self.msg.guild.me)
