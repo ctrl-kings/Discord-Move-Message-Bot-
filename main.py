@@ -25,7 +25,7 @@ class MoveBot(commands.Bot):
         await self.tree.sync()
         print(f"Ctrl Kings: Movr Bot is online. Owner ID {OWNER_ID} recognized.")
 
-    # --- NEW: SERVER JOIN NOTIFICATION (CHANNEL LOG) ---
+    # --- SERVER JOIN NOTIFICATION (CHANNEL LOG) ---
     async def on_guild_join(self, guild: discord.Guild):
         try:
             channel = self.get_channel(LOG_CHANNEL_ID) or await self.fetch_channel(LOG_CHANNEL_ID)
@@ -42,7 +42,7 @@ class MoveBot(commands.Bot):
         except Exception as e:
             print(f"Failed to send join notification: {e}")
 
-    # --- NEW: SERVER LEAVE NOTIFICATION (CHANNEL LOG) ---
+    # --- SERVER LEAVE NOTIFICATION (CHANNEL LOG) ---
     async def on_guild_remove(self, guild: discord.Guild):
         try:
             channel = self.get_channel(LOG_CHANNEL_ID) or await self.fetch_channel(LOG_CHANNEL_ID)
@@ -63,7 +63,7 @@ bot = MoveBot()
 async def execute_move(interaction: discord.Interaction, target_msg: discord.Message, target_channel, count: int, forum_title: str = None):
     if not interaction.response.is_done(): 
         await interaction.response.defer(ephemeral=True)
-    await interaction.edit_original_response(content="Preparing to move...", view=None)
+    await interaction.edit_original_response(content="Preparing to move...", embed=None, view=None)
 
     try:
         created_forum_thread = None
@@ -98,7 +98,7 @@ async def execute_move(interaction: discord.Interaction, target_msg: discord.Mes
             original_author_name = m.author.display_name
             current_author_avatar = m.author.display_avatar.url
             
-            # --- NEW SAFETY CHECKS ---
+            # --- SAFETY CHECKS ---
             # A. HUGE FILE BYPASS (25MB LIMIT)
             safe_files = []
             large_file_urls = ""
@@ -164,6 +164,59 @@ async def execute_move(interaction: discord.Interaction, target_msg: discord.Mes
     except Exception as e:
         print(f"Error during move: {e}")
         await interaction.edit_original_response(content=f"An error occurred: {e}", view=None)
+
+# --- NEW: INTERACTIVE PREVIEW & CONFIRM ---
+class ConfirmMoveView(discord.ui.View):
+    def __init__(self, target_msg, target_channel, count, forum_title=None):
+        super().__init__(timeout=120)
+        self.target_msg = target_msg
+        self.target_channel = target_channel
+        self.count = count
+        self.forum_title = forum_title
+
+    @discord.ui.button(label="Confirm Move", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await execute_move(interaction, self.target_msg, self.target_channel, self.count, self.forum_title)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="❌ Move cancelled.", embed=None, view=None)
+
+async def trigger_preview(interaction: discord.Interaction, target_msg: discord.Message, target_channel, count: int, forum_title: str = None):
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)
+
+    # Fetch the exact block of messages we are about to move
+    messages = [target_msg]
+    if count > 1:
+        async for m in target_msg.channel.history(limit=count - 1, after=target_msg.created_at, oldest_first=True):
+            messages.append(m)
+
+    last_msg = messages[-1]
+    actual_count = len(messages)
+
+    # Handle cases where the message is just an image/file or embed
+    snippet = last_msg.content[:150] + "..." if len(last_msg.content) > 150 else last_msg.content
+    if not snippet and last_msg.attachments:
+        snippet = f"*[Contains {len(last_msg.attachments)} Attachment(s)]*"
+    elif not snippet:
+        snippet = "*[Embed/System Message]*"
+
+    embed = discord.Embed(
+        title="⚠️ Confirm Message Move",
+        description="Please review the selection before executing.",
+        color=discord.Color.yellow()
+    )
+    embed.add_field(name="Destination", value=target_channel.mention, inline=True)
+    embed.add_field(name="Messages to Move", value=f"**{actual_count}**", inline=True)
+    embed.add_field(
+        name=f"Ending Message (by {last_msg.author.display_name})", 
+        value=f"> {snippet}", 
+        inline=False
+    )
+
+    view = ConfirmMoveView(target_msg, target_channel, actual_count, forum_title)
+    await interaction.edit_original_response(content=None, embed=embed, view=view)
 
 # --- THE HELP COMMAND ---
 @app_commands.command(name="help", description="Learn how to use Movr to clean up your channels")
@@ -273,7 +326,8 @@ class ForumSetupModal(discord.ui.Modal, title='Setup New Forum Post'):
         try:
             count = int(self.amount.value)
             if 1 <= count <= 100:
-                await execute_move(interaction, self.target_msg, self.target_channel, count, forum_title=self.thread_title.value)
+                # UPDATED: Now triggers preview instead of execute_move
+                await trigger_preview(interaction, self.target_msg, self.target_channel, count, forum_title=self.thread_title.value)
             else:
                 await interaction.response.send_message("Enter a number between 1 and 100.", ephemeral=True)
         except ValueError:
@@ -292,7 +346,8 @@ class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
         try:
             count = int(self.amount.value)
             if 1 <= count <= 100:
-                await execute_move(interaction, self.target_msg, self.target_channel, count)
+                # UPDATED: Now triggers preview instead of execute_move
+                await trigger_preview(interaction, self.target_msg, self.target_channel, count)
             else:
                 await interaction.response.send_message("Enter a number between 1 and 100.", ephemeral=True)
         except ValueError:
@@ -341,12 +396,16 @@ class MessageCountView(discord.ui.View):
         self.target_msg = target_msg
         self.target_channel = target_channel
 
+    # UPDATED: All buttons now call trigger_preview instead of execute_move
     @discord.ui.button(label="1", style=discord.ButtonStyle.gray)
-    async def one(self, interaction, button): await execute_move(interaction, self.target_msg, self.target_channel, 1)
+    async def one(self, interaction, button): await trigger_preview(interaction, self.target_msg, self.target_channel, 1)
+    
     @discord.ui.button(label="5", style=discord.ButtonStyle.primary)
-    async def five(self, interaction, button): await execute_move(interaction, self.target_msg, self.target_channel, 5)
+    async def five(self, interaction, button): await trigger_preview(interaction, self.target_msg, self.target_channel, 5)
+    
     @discord.ui.button(label="10", style=discord.ButtonStyle.danger)
-    async def ten(self, interaction, button): await execute_move(interaction, self.target_msg, self.target_channel, 10)
+    async def ten(self, interaction, button): await trigger_preview(interaction, self.target_msg, self.target_channel, 10)
+    
     @discord.ui.button(label="Custom", style=discord.ButtonStyle.success)
     async def custom(self, interaction, button): await interaction.response.send_modal(CustomAmountModal(self.target_msg, self.target_channel))
 
