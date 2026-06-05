@@ -4,11 +4,12 @@ import asyncio
 from dotenv import load_dotenv 
 from discord import app_commands
 from discord.ext import commands
+from aiohttp import web # <--- NEW IMPORT
 
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN') 
 OWNER_ID = int(os.getenv('OWNER_ID') or 1187154363622367285) 
-LOG_CHANNEL_ID = 1500701120362713269 # <--- ADDED YOUR CHANNEL ID HERE
+LOG_CHANNEL_ID = 1500701120362713269 
 
 class MoveBot(commands.Bot):
     def __init__(self):
@@ -18,12 +19,30 @@ class MoveBot(commands.Bot):
         intents.message_content = True 
         super().__init__(command_prefix="!", intents=intents)
 
+    # --- NEW: STATUS HANDLER FOR BASE 44 ---
+    async def status_handler(self, request):
+        return web.json_response({"status": "online", "bot": "Movr"})
+
     async def setup_hook(self):
         self.tree.add_command(move_messages_context)
         self.tree.add_command(broadcast)
         self.tree.add_command(help_command)
         await self.tree.sync()
         print(f"Ctrl Kings: Movr Bot is online. Owner ID {OWNER_ID} recognized.")
+
+        # --- NEW: WEB SERVER STARTUP ---
+        app = web.Application()
+        app.router.add_get('/', self.status_handler)
+        app.router.add_get('/status', self.status_handler)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        # Binds to Railway's assigned port, or 8080 locally
+        port = int(os.getenv("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        print(f"Network: Web server listening on port {port}")
 
     # --- SERVER JOIN NOTIFICATION (CHANNEL LOG) ---
     async def on_guild_join(self, guild: discord.Guild):
@@ -326,7 +345,6 @@ class ForumSetupModal(discord.ui.Modal, title='Setup New Forum Post'):
         try:
             count = int(self.amount.value)
             if 1 <= count <= 100:
-                # UPDATED: Now triggers preview instead of execute_move
                 await trigger_preview(interaction, self.target_msg, self.target_channel, count, forum_title=self.thread_title.value)
             else:
                 await interaction.response.send_message("Enter a number between 1 and 100.", ephemeral=True)
@@ -346,7 +364,6 @@ class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
         try:
             count = int(self.amount.value)
             if 1 <= count <= 100:
-                # UPDATED: Now triggers preview instead of execute_move
                 await trigger_preview(interaction, self.target_msg, self.target_channel, count)
             else:
                 await interaction.response.send_message("Enter a number between 1 and 100.", ephemeral=True)
@@ -396,7 +413,6 @@ class MessageCountView(discord.ui.View):
         self.target_msg = target_msg
         self.target_channel = target_channel
 
-    # UPDATED: All buttons now call trigger_preview instead of execute_move
     @discord.ui.button(label="1", style=discord.ButtonStyle.gray)
     async def one(self, interaction, button): await trigger_preview(interaction, self.target_msg, self.target_channel, 1)
     
