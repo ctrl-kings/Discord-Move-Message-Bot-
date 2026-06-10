@@ -371,7 +371,7 @@ class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
         except ValueError:
             await interaction.response.send_message("Invalid number.", ephemeral=True)
 
-# --- NEW: CROSS-SERVER DOCKING MODAL ---
+# --- FIX COMPLETED: CROSS-SERVER DOCKING MODAL WITH API FETCH FALLBACK ---
 class CrossServerModal(discord.ui.Modal, title="Cross-Server Move"):
     target_id_input = discord.ui.TextInput(
         label="Destination Channel ID", 
@@ -399,7 +399,16 @@ class CrossServerModal(discord.ui.Modal, title="Cross-Server Move"):
             if not (1 <= count <= 100):
                 return await interaction.response.send_message("❌ Enter a number between 1 and 100.", ephemeral=True)
                 
+            # Step A: Attempt local cache lookup
             dest_channel = interaction.client.get_channel(dest_channel_id)
+            
+            # Step B: Fallback directly to live REST API if cache is unbuilt
+            if dest_channel is None:
+                try:
+                    dest_channel = await interaction.client.fetch_channel(dest_channel_id)
+                except Exception:
+                    dest_channel = None
+
             if dest_channel is None:
                 return await interaction.response.send_message(
                     "❌ Target channel not found. Is Movr in that server and channel?", 
