@@ -31,7 +31,7 @@ class MoveBot(commands.Bot):
         await self.tree.sync()
         print(f"Ctrl Kings: Movr Bot is online. Owner ID {OWNER_ID} recognized.")
 
-    # --- WEB SERVER STARTUP ---
+        # --- WEB SERVER STARTUP ---
         app = web.Application()
         app.router.add_get('/', self.status_handler)
         app.router.add_get('/status', self.status_handler)
@@ -80,7 +80,7 @@ class MoveBot(commands.Bot):
 bot = MoveBot()
 
 # --- UNIVERSAL MOVE ENGINE (FORUMS, EMBEDS, LARGE FILES, NITRO SPLIT) ---
-async def execute_move(interaction: discord.Interaction, target_msg: discord.Message, target_channel, count: int, forum_title: str = None):
+async def execute_move(interaction: discord.Interaction, target_msg: discord.Message, target_channel, count: int, forum_title: str = None, leave_copy: bool = False):
     if not interaction.response.is_done(): 
         await interaction.response.defer(ephemeral=True)
     await interaction.edit_original_response(content="Preparing to move...", embed=None, view=None)
@@ -166,15 +166,19 @@ async def execute_move(interaction: discord.Interaction, target_msg: discord.Mes
 
             await asyncio.sleep(0.4)
 
-        # 3. BULK DELETE ORIGINALS
-        try:
-            await target_msg.channel.delete_messages(messages_to_move)
-        except discord.HTTPException:
-            for m in messages_to_move:
-                try: await m.delete()
-                except: pass
+        # 3. BULK DELETE ORIGINALS (Skips if user chose Copy)
+        if not leave_copy:
+            try:
+                await target_msg.channel.delete_messages(messages_to_move)
+            except discord.HTTPException:
+                for m in messages_to_move:
+                    try: 
+                        await m.delete()
+                        await asyncio.sleep(1.5) # Braking to avoid 429 rate limit
+                    except: pass
 
-        await interaction.edit_original_response(content="Move Complete.", view=ReverseView(moved_data, dest, created_forum_thread))
+        action = "Copy" if leave_copy else "Move"
+        await interaction.edit_original_response(content=f"{action} Complete.", view=ReverseView(moved_data, dest, created_forum_thread, leave_copy))
         
     except Exception as e:
         print(f"Error during move: {e}")
@@ -189,13 +193,17 @@ class ConfirmMoveView(discord.ui.View):
         self.count = count
         self.forum_title = forum_title
 
-    @discord.ui.button(label="Confirm Move", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await execute_move(interaction, self.target_msg, self.target_channel, self.count, self.forum_title)
+    @discord.ui.button(label="Confirm MOVE (Deletes Orig.)", style=discord.ButtonStyle.danger)
+    async def confirm_move(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await execute_move(interaction, self.target_msg, self.target_channel, self.count, self.forum_title, leave_copy=False)
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Confirm COPY (Leaves Orig.)", style=discord.ButtonStyle.success)
+    async def confirm_copy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await execute_move(interaction, self.target_msg, self.target_channel, self.count, self.forum_title, leave_copy=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="❌ Move cancelled.", embed=None, view=None)
+        await interaction.response.edit_message(content="❌ Action cancelled.", embed=None, view=None)
 
 # --- PATCHED: PREVIEW GENERATOR (NOW MODAL-SAFE) ---
 async def trigger_preview(interaction: discord.Interaction, target_msg: discord.Message, target_channel, count: int, forum_title: str = None):
@@ -217,8 +225,8 @@ async def trigger_preview(interaction: discord.Interaction, target_msg: discord.
         snippet = "*[Embed/System Message]*"
 
     embed = discord.Embed(
-        title="⚠️ Confirm Message Move",
-        description="Please review the selection before executing.",
+        title="⚠️ Confirm Move or Copy",
+        description="Review the selection below. You can choose to completely **Move** (deleting originals) or just **Copy** (leaving originals untouched).",
         color=discord.Color.yellow()
     )
     embed.add_field(name="Destination", value=target_channel.mention, inline=True)
@@ -279,13 +287,14 @@ async def broadcast(interaction: discord.Interaction, message: str):
 
 # --- THE REVERSE/UNDO VIEW ---
 class ReverseView(discord.ui.View):
-    def __init__(self, data, current_channel, created_forum_thread=None):
+    def __init__(self, data, current_channel, created_forum_thread=None, was_copied=False):
         super().__init__(timeout=30)
         self.data = data
         self.current_channel = current_channel
         self.created_forum_thread = created_forum_thread
+        self.was_copied = was_copied
 
-    @discord.ui.button(label="Reverse Move (30s)", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Reverse Action (30s)", style=discord.ButtonStyle.secondary)
     async def reverse_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         button.disabled = True
@@ -295,39 +304,43 @@ class ReverseView(discord.ui.View):
         first_item = self.data[0]
         orig_channel = first_item["original_channel"]
         
-        webhook_channel = orig_channel.parent if isinstance(orig_channel, discord.Thread) else orig_channel
-        webhooks = await webhook_channel.webhooks()
-        webhook = discord.utils.get(webhooks, name="Movr Helper") or await webhook_channel.create_webhook(name="Movr Helper")
+        # 1. RESTORE ORIGINALS (Only if it was a Move, not a Copy)
+        if not self.was_copied:
+            webhook_channel = orig_channel.parent if isinstance(orig_channel, discord.Thread) else orig_channel
+            webhooks = await webhook_channel.webhooks()
+            webhook = discord.utils.get(webhooks, name="Movr Helper") or await webhook_channel.create_webhook(name="Movr Helper")
 
-        for i, item in enumerate(self.data, 1):
-            await interaction.edit_original_response(content=f"Reversing Move\n{'■' * i + '□' * (total - i)} ({i}/{total})")
-            
-            rev_content = item["content"] or ""
-            rev_chunks = [rev_content[idx:idx+2000] for idx in range(0, max(1, len(rev_content)), 2000)]
-            if not rev_chunks: rev_chunks = [""]
+            for i, item in enumerate(self.data, 1):
+                await interaction.edit_original_response(content=f"Restoring to Origin\n{'■' * i + '□' * (total - i)} ({i}/{total})")
+                
+                rev_content = item["content"] or ""
+                rev_chunks = [rev_content[idx:idx+2000] for idx in range(0, max(1, len(rev_content)), 2000)]
+                if not rev_chunks: rev_chunks = [""]
 
-            for chunk in rev_chunks:
-                await webhook.send(
-                    content=chunk,
-                    username=item["author_name"],
-                    avatar_url=item["author_avatar"],
-                    thread=orig_channel if isinstance(orig_channel, discord.Thread) else discord.utils.MISSING,
-                    wait=True
-                )
+                for chunk in rev_chunks:
+                    await webhook.send(
+                        content=chunk,
+                        username=item["author_name"],
+                        avatar_url=item["author_avatar"],
+                        thread=orig_channel if isinstance(orig_channel, discord.Thread) else discord.utils.MISSING,
+                        wait=True
+                    )
 
+                await asyncio.sleep(0.4)
+                
+        # 2. CLEAR DESTINATION (Always clean up the pasted messages)
+        for item in self.data:
             for msg_id in item.get("new_msg_ids", []):
                 try:
                     msg_to_del = await self.current_channel.fetch_message(msg_id)
                     await msg_to_del.delete()
                 except: pass
             
-            await asyncio.sleep(0.4)
-            
         if self.created_forum_thread:
             try: await self.created_forum_thread.delete()
             except: pass
 
-        await interaction.edit_original_response(content="Reverse Complete: Messages returned.", view=None)
+        await interaction.edit_original_response(content="Reverse Complete: Action undone.", view=None)
 
 # --- FORUM SETUP MODAL ---
 class ForumSetupModal(discord.ui.Modal, title='Setup New Forum Post'):
