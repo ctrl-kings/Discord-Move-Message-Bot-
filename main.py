@@ -4,7 +4,7 @@ import asyncio
 from dotenv import load_dotenv 
 from discord import app_commands
 from discord.ext import commands
-from aiohttp import web # <--- NEW IMPORT
+from aiohttp import web
 
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN') 
@@ -19,18 +19,19 @@ class MoveBot(commands.Bot):
         intents.message_content = True 
         super().__init__(command_prefix="!", intents=intents)
 
-    # --- NEW: STATUS HANDLER FOR BASE 44 ---
+    # --- STATUS HANDLER FOR BASE 44 ---
     async def status_handler(self, request):
         return web.json_response({"status": "online", "bot": "Movr"})
 
     async def setup_hook(self):
         self.tree.add_command(move_messages_context)
+        self.tree.add_command(move_cross_server_context) # <--- NEW CONTEXT MENU REGISTERED SAFELY
         self.tree.add_command(broadcast)
         self.tree.add_command(help_command)
         await self.tree.sync()
         print(f"Ctrl Kings: Movr Bot is online. Owner ID {OWNER_ID} recognized.")
 
-        # --- NEW: WEB SERVER STARTUP ---
+    # --- WEB SERVER STARTUP ---
         app = web.Application()
         app.router.add_get('/', self.status_handler)
         app.router.add_get('/status', self.status_handler)
@@ -184,7 +185,7 @@ async def execute_move(interaction: discord.Interaction, target_msg: discord.Mes
         print(f"Error during move: {e}")
         await interaction.edit_original_response(content=f"An error occurred: {e}", view=None)
 
-# --- NEW: INTERACTIVE PREVIEW & CONFIRM ---
+# --- INTERACTIVE PREVIEW & CONFIRM ---
 class ConfirmMoveView(discord.ui.View):
     def __init__(self, target_msg, target_channel, count, forum_title=None):
         super().__init__(timeout=120)
@@ -370,12 +371,81 @@ class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
         except ValueError:
             await interaction.response.send_message("Invalid number.", ephemeral=True)
 
-# --- CONTEXT MENU COMMAND ---
+# --- NEW: CROSS-SERVER DOCKING MODAL ---
+class CrossServerModal(discord.ui.Modal, title="Cross-Server Move"):
+    target_id_input = discord.ui.TextInput(
+        label="Destination Channel ID", 
+        placeholder="Paste the 18-digit ID of the target channel...",
+        required=True,
+        max_length=20
+    )
+    amount_input = discord.ui.TextInput(
+        label="How many messages?", 
+        placeholder="1-100...", 
+        min_length=1, 
+        max_length=3,
+        required=True
+    )
+
+    def __init__(self, target_msg: discord.Message):
+        super().__init__()
+        self.target_msg = target_msg
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            count = int(self.amount_input.value)
+            dest_channel_id = int(self.target_id_input.value)
+            
+            if not (1 <= count <= 100):
+                return await interaction.response.send_message("❌ Enter a number between 1 and 100.", ephemeral=True)
+                
+            dest_channel = interaction.client.get_channel(dest_channel_id)
+            if dest_channel is None:
+                return await interaction.response.send_message(
+                    "❌ Target channel not found. Is Movr in that server and channel?", 
+                    ephemeral=True
+                )
+            
+            source_guild = interaction.guild
+            dest_guild = dest_channel.guild
+
+            # 🛡️ BULLETPROOF SECURITY CHECK: Compare permanent Discord Guild Owner IDs
+            if source_guild.owner_id != dest_guild.owner_id:
+                return await interaction.response.send_message(
+                    "❌ **Security Block:** Both servers must have the exact same Server Owner to move messages between them.", 
+                    ephemeral=True
+                )
+
+            perms = dest_channel.permissions_for(dest_guild.me)
+            if not perms.manage_webhooks or not perms.send_messages:
+                return await interaction.response.send_message(
+                    f"❌ Permissions missing for Movr in the destination channel {dest_channel.mention}", 
+                    ephemeral=True
+                )
+
+            # Route cleanly directly to your existing execution branches
+            if dest_channel.type == discord.ChannelType.forum:
+                await interaction.response.send_modal(ForumSetupModal(self.target_msg, dest_channel))
+            else:
+                await trigger_preview(interaction, self.target_msg, dest_channel, count)
+
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid Channel ID or Message Count layout.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Cross-server handshake error: {e}", ephemeral=True)
+
+# --- CONTEXT MENU COMMAND (STANDARD) ---
 @app_commands.context_menu(name="Move Messages")
 @app_commands.default_permissions(manage_messages=True)
 async def move_messages_context(interaction: discord.Interaction, message: discord.Message):
     view = ChannelSelectView(message)
     await interaction.response.send_message("1. Select destination channel:", view=view, ephemeral=True)
+
+# --- NEW: CONTEXT MENU COMMAND (CROSS-SERVER) ---
+@app_commands.context_menu(name="Move Cross-Server")
+@app_commands.default_permissions(manage_messages=True)
+async def move_cross_server_context(interaction: discord.Interaction, message: discord.Message):
+    await interaction.response.send_modal(CrossServerModal(message))
 
 # --- CHANNEL SELECTION VIEW ---
 class ChannelSelectView(discord.ui.View):
