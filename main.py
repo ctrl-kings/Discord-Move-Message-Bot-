@@ -25,7 +25,7 @@ class MoveBot(commands.Bot):
 
     async def setup_hook(self):
         self.tree.add_command(move_messages_context)
-        self.tree.add_command(move_cross_server_context) # <--- NEW CONTEXT MENU REGISTERED SAFELY
+        self.tree.add_command(move_cross_server_context) 
         self.tree.add_command(broadcast)
         self.tree.add_command(help_command)
         await self.tree.sync()
@@ -119,7 +119,6 @@ async def execute_move(interaction: discord.Interaction, target_msg: discord.Mes
             current_author_avatar = m.author.display_avatar.url
             
             # --- SAFETY CHECKS ---
-            # A. HUGE FILE BYPASS (25MB LIMIT)
             safe_files = []
             large_file_urls = ""
             for a in m.attachments:
@@ -128,18 +127,15 @@ async def execute_move(interaction: discord.Interaction, target_msg: discord.Mes
                 else:
                     large_file_urls += f"\n📎 [Large Attachment Bypass: {a.filename}]({a.url})"
 
-            # B. NITRO MESSAGE SPLITTING (2000 CHARACTERS)
             full_text = (m.content or "") + large_file_urls
             text_chunks = [full_text[idx:idx+2000] for idx in range(0, len(full_text), 2000)]
-            if not text_chunks: text_chunks = [""] # Failsafe for empty messages with just files
+            if not text_chunks: text_chunks = [""] 
 
-            # C. EMBED SUPPORT (Only copy Rich embeds to avoid API crashes)
             valid_embeds = [e for e in m.embeds if e.type == 'rich']
 
             sent_msg_ids = []
             first_sent_msg = None
 
-            # D. SEND CHUNKS
             for c_idx, chunk in enumerate(text_chunks):
                 sent_msg = await webhook.send(
                     content=chunk, 
@@ -157,11 +153,10 @@ async def execute_move(interaction: discord.Interaction, target_msg: discord.Mes
                 "content": m.content, 
                 "author_name": original_author_name, 
                 "author_avatar": current_author_avatar, 
-                "new_msg_ids": sent_msg_ids, # Track all chunks for reversal
+                "new_msg_ids": sent_msg_ids, 
                 "original_channel": m.channel
             })
             
-            # Safe Reaction Copying (Applied to the first chunk)
             if first_sent_msg:
                 for r in m.reactions:
                     try: 
@@ -202,11 +197,11 @@ class ConfirmMoveView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="❌ Move cancelled.", embed=None, view=None)
 
+# --- PATCHED: PREVIEW GENERATOR (NOW MODAL-SAFE) ---
 async def trigger_preview(interaction: discord.Interaction, target_msg: discord.Message, target_channel, count: int, forum_title: str = None):
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True)
 
-    # Fetch the exact block of messages we are about to move
     messages = [target_msg]
     if count > 1:
         async for m in target_msg.channel.history(limit=count - 1, after=target_msg.created_at, oldest_first=True):
@@ -215,7 +210,6 @@ async def trigger_preview(interaction: discord.Interaction, target_msg: discord.
     last_msg = messages[-1]
     actual_count = len(messages)
 
-    # Handle cases where the message is just an image/file or embed
     snippet = last_msg.content[:150] + "..." if len(last_msg.content) > 150 else last_msg.content
     if not snippet and last_msg.attachments:
         snippet = f"*[Contains {len(last_msg.attachments)} Attachment(s)]*"
@@ -236,7 +230,13 @@ async def trigger_preview(interaction: discord.Interaction, target_msg: discord.
     )
 
     view = ConfirmMoveView(target_msg, target_channel, actual_count, forum_title)
-    await interaction.edit_original_response(content=None, embed=embed, view=view)
+    
+    # CRITICAL FIX: If this is triggered from a Modal, editing an original response crashes silently.
+    # We catch the NotFound error and push a followup instead!
+    try:
+        await interaction.edit_original_response(content=None, embed=embed, view=view)
+    except discord.NotFound:
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 # --- THE HELP COMMAND ---
 @app_commands.command(name="help", description="Learn how to use Movr to clean up your channels")
@@ -302,7 +302,6 @@ class ReverseView(discord.ui.View):
         for i, item in enumerate(self.data, 1):
             await interaction.edit_original_response(content=f"Reversing Move\n{'■' * i + '□' * (total - i)} ({i}/{total})")
             
-            # Nitro split for reversed text just in case
             rev_content = item["content"] or ""
             rev_chunks = [rev_content[idx:idx+2000] for idx in range(0, max(1, len(rev_content)), 2000)]
             if not rev_chunks: rev_chunks = [""]
@@ -316,7 +315,6 @@ class ReverseView(discord.ui.View):
                     wait=True
                 )
 
-            # Clean up all chunks that were created during the move
             for msg_id in item.get("new_msg_ids", []):
                 try:
                     msg_to_del = await self.current_channel.fetch_message(msg_id)
@@ -325,7 +323,6 @@ class ReverseView(discord.ui.View):
             
             await asyncio.sleep(0.4)
             
-        # Clean up the forum post if we made one!
         if self.created_forum_thread:
             try: await self.created_forum_thread.delete()
             except: pass
@@ -371,7 +368,7 @@ class CustomAmountModal(discord.ui.Modal, title='Move Custom Amount'):
         except ValueError:
             await interaction.response.send_message("Invalid number.", ephemeral=True)
 
-# --- FIX COMPLETED: CROSS-SERVER DOCKING MODAL WITH API FETCH FALLBACK ---
+# --- PATCHED: CROSS-SERVER DOCKING MODAL ---
 class CrossServerModal(discord.ui.Modal, title="Cross-Server Move"):
     target_id_input = discord.ui.TextInput(
         label="Destination Channel ID", 
@@ -399,10 +396,8 @@ class CrossServerModal(discord.ui.Modal, title="Cross-Server Move"):
             if not (1 <= count <= 100):
                 return await interaction.response.send_message("❌ Enter a number between 1 and 100.", ephemeral=True)
                 
-            # Step A: Attempt local cache lookup
             dest_channel = interaction.client.get_channel(dest_channel_id)
             
-            # Step B: Fallback directly to live REST API if cache is unbuilt
             if dest_channel is None:
                 try:
                     dest_channel = await interaction.client.fetch_channel(dest_channel_id)
@@ -418,7 +413,6 @@ class CrossServerModal(discord.ui.Modal, title="Cross-Server Move"):
             source_guild = interaction.guild
             dest_guild = dest_channel.guild
 
-            # 🛡️ BULLETPROOF SECURITY CHECK: Compare permanent Discord Guild Owner IDs
             if source_guild.owner_id != dest_guild.owner_id:
                 return await interaction.response.send_message(
                     "❌ **Security Block:** Both servers must have the exact same Server Owner to move messages between them.", 
@@ -432,16 +426,21 @@ class CrossServerModal(discord.ui.Modal, title="Cross-Server Move"):
                     ephemeral=True
                 )
 
-            # Route cleanly directly to your existing execution branches
             if dest_channel.type == discord.ChannelType.forum:
                 await interaction.response.send_modal(ForumSetupModal(self.target_msg, dest_channel))
             else:
                 await trigger_preview(interaction, self.target_msg, dest_channel, count)
 
+        # CRITICAL FIX: Safe error handling that prevents silent crashes
         except ValueError:
-            await interaction.response.send_message("❌ Invalid Channel ID or Message Count layout.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Invalid Channel ID or Message Count layout.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Cross-server handshake error: {e}", ephemeral=True)
+            print(f"🔥 CROSS-SERVER CRASH DEBUG: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ Cross-server handshake error: {e}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ Cross-server handshake error: {e}", ephemeral=True)
 
 # --- CONTEXT MENU COMMAND (STANDARD) ---
 @app_commands.context_menu(name="Move Messages")
@@ -450,7 +449,7 @@ async def move_messages_context(interaction: discord.Interaction, message: disco
     view = ChannelSelectView(message)
     await interaction.response.send_message("1. Select destination channel:", view=view, ephemeral=True)
 
-# --- NEW: CONTEXT MENU COMMAND (CROSS-SERVER) ---
+# --- CONTEXT MENU COMMAND (CROSS-SERVER) ---
 @app_commands.context_menu(name="Move Cross-Server")
 @app_commands.default_permissions(manage_messages=True)
 async def move_cross_server_context(interaction: discord.Interaction, message: discord.Message):
